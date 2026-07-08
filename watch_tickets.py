@@ -50,14 +50,26 @@ VIVIDSEATS_BLOCK_RE = re.compile(
 
 def load_page_text(url: str) -> str:
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context(user_agent=USER_AGENT)
+        browser = p.chromium.launch(
+            headless=True,
+            args=["--disable-blink-features=AutomationControlled"],
+        )
+        context = browser.new_context(
+            user_agent=USER_AGENT,
+            viewport={"width": 1280, "height": 900},
+            locale="en-US",
+        )
+        # Reduce a couple of the most common automation fingerprints
+        context.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+        )
         page = context.new_page()
         page.goto(url, wait_until="networkidle", timeout=45000)
         page.wait_for_timeout(3000)
+        title = page.title()
         text = page.inner_text("body")
         browser.close()
-    return text
+    return title, text
 
 
 def cheapest_stubhub(text: str) -> tuple[float | None, int]:
@@ -93,8 +105,13 @@ def send_telegram(message: str) -> None:
 
 def check_platform(name: str, url: str, extractor) -> tuple[str, float | None, int, Exception | None]:
     try:
-        text = load_page_text(url)
+        title, text = load_page_text(url)
         price, count = extractor(text)
+        if count == 0:
+            # Diagnostic breadcrumb: print what we actually got so failures
+            # are debuggable from the Actions log instead of a silent zero.
+            print(f"--- {name} DEBUG: page title = {title!r}", file=sys.stderr)
+            print(f"--- {name} DEBUG: first 500 chars of body text:\n{text[:500]}", file=sys.stderr)
         return name, price, count, None
     except Exception as exc:  # noqa: BLE001
         return name, None, 0, exc
