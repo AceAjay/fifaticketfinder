@@ -48,7 +48,7 @@ VIVIDSEATS_BLOCK_RE = re.compile(
 )
 
 
-def load_page_text(url: str) -> str:
+def load_page_text(url: str, scroll: bool = False) -> tuple[str, str]:
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=True,
@@ -59,13 +59,21 @@ def load_page_text(url: str) -> str:
             viewport={"width": 1280, "height": 900},
             locale="en-US",
         )
-        # Reduce a couple of the most common automation fingerprints
         context.add_init_script(
             "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
         )
         page = context.new_page()
         page.goto(url, wait_until="networkidle", timeout=45000)
         page.wait_for_timeout(3000)
+
+        if scroll:
+            # Listings on some sites are virtualized/lazy-loaded and only
+            # render as they enter the viewport. Scroll down in steps so
+            # they actually populate before we read the page.
+            for _ in range(6):
+                page.mouse.wheel(0, 1200)
+                page.wait_for_timeout(700)
+
         title = page.title()
         text = page.inner_text("body")
         browser.close()
@@ -103,15 +111,17 @@ def send_telegram(message: str) -> None:
     resp.raise_for_status()
 
 
-def check_platform(name: str, url: str, extractor) -> tuple[str, float | None, int, Exception | None]:
+def check_platform(name: str, url: str, extractor, scroll: bool = False) -> tuple[str, float | None, int, Exception | None]:
     try:
-        title, text = load_page_text(url)
+        title, text = load_page_text(url, scroll=scroll)
         price, count = extractor(text)
         if count == 0:
-            # Diagnostic breadcrumb: print what we actually got so failures
-            # are debuggable from the Actions log instead of a silent zero.
             print(f"--- {name} DEBUG: page title = {title!r}", file=sys.stderr)
             print(f"--- {name} DEBUG: first 500 chars of body text:\n{text[:500]}", file=sys.stderr)
+            if not text.strip():
+                # Empty body from a real ticket site is the classic signature
+                # of a bot-detection interstitial that never resolved.
+                return name, None, -1, None
         return name, price, count, None
     except Exception as exc:  # noqa: BLE001
         return name, None, 0, exc
@@ -122,7 +132,7 @@ def main():
 
     results = [
         check_platform("StubHub", STUBHUB_URL, cheapest_stubhub),
-        check_platform("Vivid Seats", VIVIDSEATS_URL, cheapest_vividseats),
+        check_platform("Vivid Seats", VIVIDSEATS_URL, cheapest_vividseats, scroll=True),
     ]
 
     lines = [f"<b>{EVENT_LABEL}</b>", f"Checked {now} (need {TICKETS_NEEDED} together)"]
@@ -133,8 +143,9 @@ def main():
     for name, price, count, err in results:
         if err:
             errors.append(f"{name}: FAILED ({err})")
-            continue
-        if price is None:
+        elif count == -1:
+            lines.append(f"{name}: page appears blocked (empty response) — skipped this run")
+        elif price is None:
             lines.append(f"{name}: no {TICKETS_NEEDED}-together listings found ({count} scanned)")
         else:
             lines.append(f"{name}: ${price:,} ea  ({count} matching listings)")
