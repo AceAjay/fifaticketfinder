@@ -43,7 +43,7 @@ STUBHUB_BLOCK_RE = re.compile(
     r"(\d+)\s+tickets together.*?\$([\d,]+)\s*\n\s*incl\. fees", re.S
 )
 VIVIDSEATS_BLOCK_RE = re.compile(
-    r"\|\s*(\d+)(?:[\u2013\-](\d+))?\s*tickets?.*?Fees Incl\.\s*\n\$([\d,]+)\s*\nea",
+    r"\|\s*(\d+)(?:[\u2013\-](\d+))?\s*tickets?.*?Fees Incl\.\s*\n\$([\d,]+)\s*\n\s*ea",
     re.S,
 )
 
