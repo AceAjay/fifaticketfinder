@@ -1,12 +1,14 @@
 """
-World Cup Ticket Watcher — multi-platform (StubHub + Vivid Seats)
--------------------------------------------------------------------
-Checks both marketplaces for the cheapest listing that has (at least)
-TICKETS_NEEDED seats together, and sends a Telegram message every run.
-If either platform's price is at/below THRESHOLD, sends a loud alert.
+World Cup Ticket Watcher — Vivid Seats, multi-event
+------------------------------------------------------
+Checks Vivid Seats hourly for each event in EVENTS below, for the cheapest
+listing with 2 seats together. Sends one combined Telegram message per run:
+a clean line per event normally, or a big attention-grabbing alert if any
+event's price drops to/below its own threshold.
 
-No login required on either site — both pages checked here are public
-listing pages. The watcher never signs in anywhere.
+StubHub is intentionally not checked here — GitHub Actions runs from cloud
+IPs that StubHub blocks outright. StubHub tracking, if wanted, runs
+separately from your own Mac via check_stubhub_local.py.
 
 Environment variables required (GitHub Actions secrets):
     TELEGRAM_BOT_TOKEN
@@ -16,20 +18,30 @@ Environment variables required (GitHub Actions secrets):
 import os
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import requests
 from playwright.sync_api import sync_playwright
 
 # ---------------------------------------------------------------------------
-# CONFIG
+# CONFIG — add/remove events here
 # ---------------------------------------------------------------------------
-EVENT_LABEL = "Argentina vs Switzerland - Kansas City (Jul 11)"
-THRESHOLD = 1300          # alert loudly if price-per-ticket <= this
 TICKETS_NEEDED = 2
+LOCAL_TZ = ZoneInfo("America/Los_Angeles")
 
-STUBHUB_URL = "https://www.stubhub.com/world-cup-kansas-city-tickets-7-11-2026/event/153021616/"
-VIVIDSEATS_URL = "https://www.vividseats.com/world-cup-soccer-tickets-geha-field-at-arrowhead-stadium-7-11-2026--sports-soccer/production/5080868"
+EVENTS = [
+    {
+        "label": "Argentina vs Switzerland — Kansas City (Jul 11)",
+        "url": "https://www.vividseats.com/world-cup-soccer-tickets-geha-field-at-arrowhead-stadium-7-11-2026--sports-soccer/production/5080868",
+        "threshold": 1300,
+    },
+    {
+        "label": "World Cup Semi-Final — Atlanta (Jul 15)",
+        "url": "https://www.vividseats.com/world-cup-soccer-tickets-mercedes-benz-stadium-7-15-2026--sports-soccer/production/5080871",
+        "threshold": 1500,
+    },
+]
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
@@ -39,16 +51,13 @@ USER_AGENT = (
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
 
-STUBHUB_BLOCK_RE = re.compile(
-    r"(\d+)\s+tickets together.*?\$([\d,]+)\s*\n\s*incl\. fees", re.S
-)
 VIVIDSEATS_BLOCK_RE = re.compile(
     r"\|\s*(\d+)(?:[\u2013\-](\d+))?\s*tickets?.*?Fees Incl\.\s*\n\$([\d,]+)\s*\n\s*ea",
     re.S,
 )
 
 
-def load_page_text(url: str, scroll: bool = False) -> tuple[str, str]:
+def load_page_text(url: str) -> str:
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=True,
@@ -65,30 +74,15 @@ def load_page_text(url: str, scroll: bool = False) -> tuple[str, str]:
         page = context.new_page()
         page.goto(url, wait_until="networkidle", timeout=45000)
         page.wait_for_timeout(3000)
-
-        if scroll:
-            # Listings on some sites are virtualized/lazy-loaded and only
-            # render as they enter the viewport. Scroll down in steps so
-            # they actually populate before we read the page.
-            for _ in range(6):
-                page.mouse.wheel(0, 1200)
-                page.wait_for_timeout(700)
-
-        title = page.title()
+        for _ in range(6):
+            page.mouse.wheel(0, 1200)
+            page.wait_for_timeout(700)
         text = page.inner_text("body")
         browser.close()
-    return title, text
+    return text
 
 
-def cheapest_stubhub(text: str) -> tuple[float | None, int]:
-    prices = []
-    for qty_str, price_str in STUBHUB_BLOCK_RE.findall(text):
-        if int(qty_str) >= TICKETS_NEEDED:
-            prices.append(int(price_str.replace(",", "")))
-    return (min(prices) if prices else None), len(prices)
-
-
-def cheapest_vividseats(text: str) -> tuple[float | None, int]:
+def cheapest_vividseats(text: str) -> tuple[int | None, int]:
     prices = []
     for qty_min, qty_max, price_str in VIVIDSEATS_BLOCK_RE.findall(text):
         lo = int(qty_min)
@@ -111,79 +105,51 @@ def send_telegram(message: str) -> None:
     resp.raise_for_status()
 
 
-def check_platform(name: str, url: str, extractor, scroll: bool = False) -> tuple[str, float | None, int, Exception | None]:
+def timestamp() -> str:
+    return datetime.now(LOCAL_TZ).strftime("%a %I:%M %p PT")
+
+
+def check_event(event: dict) -> dict:
     try:
-        title, text = load_page_text(url, scroll=scroll)
-        price, count = extractor(text)
-        if count == 0:
-            has_marker = ("tickets together" in text) or ("Fees Incl." in text) or ("incl. fees" in text)
-            print(f"--- {name} DEBUG: page title = {title!r}", file=sys.stderr)
-            print(f"--- {name} DEBUG: total body text length = {len(text)} chars", file=sys.stderr)
-            print(f"--- {name} DEBUG: pricing marker text found anywhere on page = {has_marker}", file=sys.stderr)
-            print(f"--- {name} DEBUG: first 300 chars:\n{text[:300]}", file=sys.stderr)
-            print(f"--- {name} DEBUG: last 300 chars:\n{text[-300:]}", file=sys.stderr)
-            for marker in ("Fees Incl.", "incl. fees", "tickets together"):
-                idx = text.find(marker)
-                if idx != -1:
-                    start = max(0, idx - 200)
-                    end = min(len(text), idx + 100)
-                    print(
-                        f"--- {name} DEBUG: context around first '{marker}':\n{text[start:end]}",
-                        file=sys.stderr,
-                    )
-            if not text.strip():
-                # Empty body from a real ticket site is the classic signature
-                # of a bot-detection interstitial that never resolved.
-                return name, None, -1, None
-        return name, price, count, None
+        text = load_page_text(event["url"])
+        price, count = cheapest_vividseats(text)
+        return {**event, "price": price, "count": count, "error": None}
     except Exception as exc:  # noqa: BLE001
-        return name, None, 0, exc
+        return {**event, "price": None, "count": 0, "error": str(exc)}
 
 
 def main():
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    now = timestamp()
+    results = [check_event(e) for e in EVENTS]
 
-    results = [
-        check_platform("StubHub", STUBHUB_URL, cheapest_stubhub),
-        check_platform("Vivid Seats", VIVIDSEATS_URL, cheapest_vividseats, scroll=True),
-    ]
+    alerts = [r for r in results if r["price"] is not None and r["price"] <= r["threshold"]]
+    normal = [r for r in results if r not in alerts]
 
-    lines = [f"<b>{EVENT_LABEL}</b>", f"Checked {now} (need {TICKETS_NEEDED} together)"]
-    best_price = None
-    best_platform = None
-    errors = []
-
-    for name, price, count, err in results:
-        if err:
-            errors.append(f"{name}: FAILED ({err})")
-        elif count == -1:
-            lines.append(f"{name}: page appears blocked (empty response) — skipped this run")
-        elif price is None:
-            lines.append(f"{name}: no {TICKETS_NEEDED}-together listings found ({count} scanned)")
-        else:
-            lines.append(f"{name}: ${price:,} ea  ({count} matching listings)")
-            if best_price is None or price < best_price:
-                best_price = price
-                best_platform = name
-
-    if errors:
-        lines.append("")
-        lines.extend(errors)
-
-    if best_price is not None and best_price <= THRESHOLD:
+    # --- Alerts get their own loud message each, sent first ---
+    for r in alerts:
         send_telegram(
-            "🚨🚨🚨 PRICE ALERT 🚨🚨🚨\n"
-            + f"<b>{best_platform}</b> has 2 together at <b>${best_price:,}</b> "
-            + f"(threshold ${THRESHOLD:,})\n\n"
-            + "\n".join(lines)
+            "🎉🔥🚨 PRICE DROP — GO GO GO 🚨🔥🎉\n\n"
+            f"💰 <b>${r['price']:,}</b> per ticket 💰\n"
+            f"(your target was ${r['threshold']:,})\n\n"
+            f"<b>{r['label']}</b>\n"
+            f"Checked {now}\n\n"
+            f"👉 {r['url']}\n\n"
+            "🔥🔥🔥 BUY NOW BEFORE IT'S GONE 🔥🔥🔥"
         )
-    else:
-        send_telegram("✅ " + "\n".join(lines))
 
-    if errors and best_price is None:
-        # both platforms failed — non-zero exit so the Actions run shows red
-        sys.exit(1)
+    # --- Everything else: one combined, quiet status message ---
+    if normal:
+        lines = [f"✅ Checked {now}"]
+        for r in normal:
+            if r["error"]:
+                lines.append(f"{r['label']}: FAILED ({r['error']})")
+            elif r["price"] is None:
+                lines.append(f"{r['label']}: no {TICKETS_NEEDED}-together listings found")
+            else:
+                lines.append(f"{r['label']}: ${r['price']:,} (target ${r['threshold']:,})")
+        send_telegram("\n".join(lines))
 
 
 if __name__ == "__main__":
     main()
+
