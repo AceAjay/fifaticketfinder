@@ -116,8 +116,12 @@ def check_platform(name: str, url: str, extractor, scroll: bool = False) -> tupl
         title, text = load_page_text(url, scroll=scroll)
         price, count = extractor(text)
         if count == 0:
+            has_marker = ("tickets together" in text) or ("Fees Incl." in text) or ("incl. fees" in text)
             print(f"--- {name} DEBUG: page title = {title!r}", file=sys.stderr)
-            print(f"--- {name} DEBUG: first 500 chars of body text:\n{text[:500]}", file=sys.stderr)
+            print(f"--- {name} DEBUG: total body text length = {len(text)} chars", file=sys.stderr)
+            print(f"--- {name} DEBUG: pricing marker text found anywhere on page = {has_marker}", file=sys.stderr)
+            print(f"--- {name} DEBUG: first 300 chars:\n{text[:300]}", file=sys.stderr)
+            print(f"--- {name} DEBUG: last 300 chars:\n{text[-300:]}", file=sys.stderr)
             if not text.strip():
                 # Empty body from a real ticket site is the classic signature
                 # of a bot-detection interstitial that never resolved.
