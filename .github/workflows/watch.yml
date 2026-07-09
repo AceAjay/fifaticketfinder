@@ -2,9 +2,12 @@ name: World Cup Ticket Watcher
 
 on:
   schedule:
-    # Every hour, on the hour, UTC. Adjust cadence here if you want it tighter
-    # or looser closer to matchday.
-    - cron: "0 * * * *"
+    # Every hour, at :17 past — NOT on the hour. GitHub explicitly warns
+    # that "0 * * * *" (top of every hour) is the most congested slot on
+    # their platform since most repos default to it, and scheduled runs
+    # can be silently delayed or dropped during that load spike. Minute
+    # 17 avoids that pile-up.
+    - cron: "17 * * * *"
   workflow_dispatch: {}   # lets you trigger a manual run from the Actions tab
 
 jobs:
