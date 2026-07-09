@@ -183,14 +183,18 @@ def main():
     if normal:
         lines = [f"Checked {now}"]
         for r in normal:
-            if r["best_price"] is None:
-                lines.append(f"❓ {r['label']}: no listings found on either platform")
-            else:
-                icon = status_icon(r["best_price"], r["threshold"])
-                lines.append(
-                    f"{icon} {r['label']}: ${r['best_price']:,} on {r['best_platform']} "
-                    f"(target ${r['threshold']:,})"
-                )
+            lines.append(f"\n<b>{r['label']}</b> (target ${r['threshold']:,})")
+
+            vs, gt = r["vividseats"], r["gametime"]
+            for platform_name, result in (("Vivid Seats", vs), ("Gametime", gt)):
+                if result["error"]:
+                    lines.append(f"❓ {platform_name}: check failed")
+                elif result["price"] is None:
+                    lines.append(f"❓ {platform_name}: no listings found")
+                else:
+                    icon = status_icon(result["price"], r["threshold"])
+                    lines.append(f"{icon} {platform_name}: ${result['price']:,}")
+
         send_telegram("\n".join(lines))
 
 
