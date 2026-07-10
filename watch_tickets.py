@@ -1,15 +1,10 @@
 """
-World Cup Ticket Watcher — Vivid Seats + Gametime, multi-event
-------------------------------------------------------------------
-For each event in EVENTS, checks both Vivid Seats and Gametime for the
-cheapest listing with 2 seats together, and reports whichever platform is
-cheaper. Sends one combined Telegram message per run for normal status; a
-big attention-grabbing alert fires immediately if either platform's price
-drops to/below that event's threshold.
-
-StubHub is intentionally not checked here — GitHub Actions runs from cloud
-IPs that StubHub blocks outright (confirmed via testing, both cloud and
-local). Not worth chasing further.
+World Cup Ticket Watcher — Vivid Seats + Gametime + SeatPick
+----------------------------------------------------------------
+For each event, checks three marketplaces for the cheapest listing
+with 2 seats together. Sends one combined Telegram message per run
+showing every platform's price, or a loud alert if any price drops
+to/below that event's threshold.
 
 Environment variables required (GitHub Actions secrets):
     TELEGRAM_BOT_TOKEN
@@ -26,7 +21,7 @@ import requests
 from playwright.sync_api import sync_playwright
 
 # ---------------------------------------------------------------------------
-# CONFIG — add/remove events here
+# CONFIG
 # ---------------------------------------------------------------------------
 TICKETS_NEEDED = 2
 LOCAL_TZ = ZoneInfo("America/Los_Angeles")
@@ -36,21 +31,52 @@ CLOSE_RANGE = 200  # within this much above threshold = "getting close" icon
 def status_icon(price: int, threshold: int) -> str:
     diff = price - threshold
     if diff <= CLOSE_RANGE:
-        return "👀"  # within $200 above target — worth watching closely
-    return "⚪"  # still well above target — quiet/neutral
+        return "👀"
+    return "⚪"
+
 
 EVENTS = [
     {
         "label": "Argentina vs Switzerland — Kansas City (Jul 11)",
         "threshold": 1300,
-        "vividseats_url": "https://www.vividseats.com/world-cup-soccer-tickets-geha-field-at-arrowhead-stadium-7-11-2026--sports-soccer/production/5080868",
-        "gametime_url": "https://gametime.co/fifa/fifa-world-cup-argentina-vs-switzerland-match-100-quarter-final-tickets/7-11-2026-kansas-city-mo-geha-field-at-arrowhead-stadium/events/66ac1f15ba6c613e111c87d3",
+        "platforms": [
+            {
+                "name": "Vivid Seats",
+                "url": "https://www.vividseats.com/world-cup-soccer-tickets-geha-field-at-arrowhead-stadium-7-11-2026--sports-soccer/production/5080868",
+                "scroll": True,
+            },
+            {
+                "name": "Gametime",
+                "url": "https://gametime.co/fifa/fifa-world-cup-argentina-vs-switzerland-match-100-quarter-final-tickets/7-11-2026-kansas-city-mo-geha-field-at-arrowhead-stadium/events/66ac1f15ba6c613e111c87d3",
+                "scroll": False,
+            },
+            {
+                "name": "SeatPick",
+                "url": "https://seatpick.com/tbd-vs-tbd-football-world-cup-quarter-finals-tickets/event/321769?quantity=2",
+                "scroll": False,
+            },
+        ],
     },
     {
         "label": "World Cup Semi-Final — Atlanta (Jul 15)",
         "threshold": 1500,
-        "vividseats_url": "https://www.vividseats.com/world-cup-soccer-tickets-mercedes-benz-stadium-7-15-2026--sports-soccer/production/5080871",
-        "gametime_url": "https://gametime.co/fifa/fifa-world-cup-nor-eng-vs-arg-sui-match-102-semi-final-tickets/7-15-2026-atlanta-ga-mercedes-benz-stadium/events/66a7e8a5218fbd1123388be7",
+        "platforms": [
+            {
+                "name": "Vivid Seats",
+                "url": "https://www.vividseats.com/world-cup-soccer-tickets-mercedes-benz-stadium-7-15-2026--sports-soccer/production/5080871",
+                "scroll": True,
+            },
+            {
+                "name": "Gametime",
+                "url": "https://gametime.co/fifa/fifa-world-cup-nor-eng-vs-arg-sui-match-102-semi-final-tickets/7-15-2026-atlanta-ga-mercedes-benz-stadium/events/66a7e8a5218fbd1123388be7",
+                "scroll": False,
+            },
+            {
+                "name": "SeatPick",
+                "url": "https://seatpick.com/tbd-vs-tbd-football-world-cup-semi-finals-tickets/event/321774?quantity=2",
+                "scroll": False,
+            },
+        ],
     },
 ]
 
@@ -62,12 +88,45 @@ USER_AGENT = (
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
 
-VIVIDSEATS_BLOCK_RE = re.compile(
+# --- Platform-specific price extractors ---
+
+VIVIDSEATS_RE = re.compile(
     r"\|\s*(\d+)(?:[\u2013\-](\d+))?\s*tickets?.*?Fees Incl\.\s*\n\$([\d,]+)\s*\n\s*ea",
     re.S,
 )
 GAMETIME_RE = re.compile(r"Includes Fees\n\$([\d,]+)/ea")
+SEATPICK_RE = re.compile(r"\$([\d,]+)\s*\nwith fees")
 
+
+def extract_vividseats(text: str) -> tuple[int | None, int]:
+    prices = []
+    for qty_min, qty_max, price_str in VIVIDSEATS_RE.findall(text):
+        lo = int(qty_min)
+        hi = int(qty_max) if qty_max else lo
+        if lo <= TICKETS_NEEDED <= hi:
+            prices.append(int(price_str.replace(",", "")))
+    return (min(prices) if prices else None), len(prices)
+
+
+def extract_gametime(text: str) -> tuple[int | None, int]:
+    prices = [int(p.replace(",", "")) for p in GAMETIME_RE.findall(text)]
+    return (min(prices) if prices else None), len(prices)
+
+
+def extract_seatpick(text: str) -> tuple[int | None, int]:
+    # SeatPick's URL already filters to quantity=2 and "Seated Together"
+    prices = [int(p.replace(",", "")) for p in SEATPICK_RE.findall(text)]
+    return (min(prices) if prices else None), len(prices)
+
+
+EXTRACTORS = {
+    "Vivid Seats": extract_vividseats,
+    "Gametime": extract_gametime,
+    "SeatPick": extract_seatpick,
+}
+
+
+# --- Browser + Telegram plumbing ---
 
 def load_page_text(url: str, scroll: bool = False) -> str:
     with sync_playwright() as p:
@@ -95,23 +154,6 @@ def load_page_text(url: str, scroll: bool = False) -> str:
     return text
 
 
-def cheapest_vividseats(text: str) -> tuple[int | None, int]:
-    prices = []
-    for qty_min, qty_max, price_str in VIVIDSEATS_BLOCK_RE.findall(text):
-        lo = int(qty_min)
-        hi = int(qty_max) if qty_max else lo
-        if lo <= TICKETS_NEEDED <= hi:
-            prices.append(int(price_str.replace(",", "")))
-    return (min(prices) if prices else None), len(prices)
-
-
-def cheapest_gametime(text: str) -> tuple[int | None, int]:
-    # The event page defaults to a "2 Tickets" filter already, so every
-    # /ea price on the page is already for the requested quantity.
-    prices = [int(p.replace(",", "")) for p in GAMETIME_RE.findall(text)]
-    return (min(prices) if prices else None), len(prices)
-
-
 def send_telegram(message: str) -> None:
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID env vars.", file=sys.stderr)
@@ -129,33 +171,33 @@ def timestamp() -> str:
     return datetime.now(LOCAL_TZ).strftime("%a %I:%M %p PT")
 
 
-def check_platform(url: str, extractor, scroll: bool = False) -> dict:
+# --- Core check logic ---
+
+def check_platform(platform: dict) -> dict:
+    name = platform["name"]
+    extractor = EXTRACTORS[name]
     try:
-        text = load_page_text(url, scroll=scroll)
+        text = load_page_text(platform["url"], scroll=platform.get("scroll", False))
         price, count = extractor(text)
-        return {"price": price, "count": count, "error": None}
+        return {"name": name, "price": price, "count": count, "error": None, "url": platform["url"]}
     except Exception as exc:  # noqa: BLE001
-        return {"price": None, "count": 0, "error": str(exc)}
+        return {"name": name, "price": None, "count": 0, "error": str(exc), "url": platform["url"]}
 
 
 def check_event(event: dict) -> dict:
-    vs = check_platform(event["vividseats_url"], cheapest_vividseats, scroll=True)
-    gt = check_platform(event["gametime_url"], cheapest_gametime, scroll=False)
-
-    candidates = []
-    if vs["price"] is not None:
-        candidates.append(("Vivid Seats", vs["price"]))
-    if gt["price"] is not None:
-        candidates.append(("Gametime", gt["price"]))
-
-    best_platform, best_price = min(candidates, key=lambda c: c[1]) if candidates else (None, None)
+    results = [check_platform(p) for p in event["platforms"]]
+    priced = [(r["name"], r["price"], r["url"]) for r in results if r["price"] is not None]
+    if priced:
+        best_name, best_price, best_url = min(priced, key=lambda c: c[1])
+    else:
+        best_name, best_price, best_url = None, None, None
 
     return {
         **event,
-        "vividseats": vs,
-        "gametime": gt,
-        "best_platform": best_platform,
+        "platform_results": results,
+        "best_name": best_name,
         "best_price": best_price,
+        "best_url": best_url,
     }
 
 
@@ -166,35 +208,31 @@ def main():
     alerts = [r for r in results if r["best_price"] is not None and r["best_price"] <= r["threshold"]]
     normal = [r for r in results if r not in alerts]
 
-    # --- Alerts get their own loud message each, sent first ---
+    # --- Alerts: loud, individual message per event ---
     for r in alerts:
-        url = r["vividseats_url"] if r["best_platform"] == "Vivid Seats" else r["gametime_url"]
         send_telegram(
             "🎉🔥🚨 PRICE DROP — GO GO GO 🚨🔥🎉\n\n"
-            f"💰 <b>${r['best_price']:,}</b> per ticket on <b>{r['best_platform']}</b> 💰\n"
+            f"💰 <b>${r['best_price']:,}</b> per ticket on <b>{r['best_name']}</b> 💰\n"
             f"(your target was ${r['threshold']:,})\n\n"
             f"<b>{r['label']}</b>\n"
             f"Checked {now}\n\n"
-            f"👉 {url}\n\n"
+            f"👉 {r['best_url']}\n\n"
             "🔥🔥🔥 BUY NOW BEFORE IT'S GONE 🔥🔥🔥"
         )
 
-    # --- Everything else: one combined, quiet status message ---
+    # --- Normal: one combined message, per-platform breakdown ---
     if normal:
         lines = [f"Checked {now}"]
         for r in normal:
             lines.append(f"\n<b>{r['label']}</b> (target ${r['threshold']:,})")
-
-            vs, gt = r["vividseats"], r["gametime"]
-            for platform_name, result in (("Vivid Seats", vs), ("Gametime", gt)):
-                if result["error"]:
-                    lines.append(f"❓ {platform_name}: check failed")
-                elif result["price"] is None:
-                    lines.append(f"❓ {platform_name}: no listings found")
+            for pr in r["platform_results"]:
+                if pr["error"]:
+                    lines.append(f"  ❓ {pr['name']}: check failed")
+                elif pr["price"] is None:
+                    lines.append(f"  ❓ {pr['name']}: no listings found")
                 else:
-                    icon = status_icon(result["price"], r["threshold"])
-                    lines.append(f"{icon} {platform_name}: ${result['price']:,}")
-
+                    icon = status_icon(pr["price"], r["threshold"])
+                    lines.append(f"  {icon} {pr['name']}: ${pr['price']:,}")
         send_telegram("\n".join(lines))
 
 
