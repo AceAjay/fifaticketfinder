@@ -37,28 +37,7 @@ def status_icon(price: int, threshold: int) -> str:
 
 EVENTS = [
     {
-        "label": "Argentina vs Switzerland — Kansas City (Jul 11)",
-        "threshold": 1300,
-        "platforms": [
-            {
-                "name": "Vivid Seats",
-                "url": "https://www.vividseats.com/world-cup-soccer-tickets-geha-field-at-arrowhead-stadium-7-11-2026--sports-soccer/production/5080868",
-                "scroll": True,
-            },
-            {
-                "name": "Gametime",
-                "url": "https://gametime.co/fifa/fifa-world-cup-argentina-vs-switzerland-match-100-quarter-final-tickets/7-11-2026-kansas-city-mo-geha-field-at-arrowhead-stadium/events/66ac1f15ba6c613e111c87d3",
-                "scroll": False,
-            },
-            {
-                "name": "SeatPick",
-                "url": "https://seatpick.com/tbd-vs-tbd-football-world-cup-quarter-finals-tickets/event/321769?quantity=2",
-                "scroll": False,
-            },
-        ],
-    },
-    {
-        "label": "World Cup Semi-Final — Atlanta (Jul 15)",
+        "label": "Argentina vs England — Atlanta (Jul 15)",
         "threshold": 1500,
         "platforms": [
             {
