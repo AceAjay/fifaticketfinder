@@ -158,6 +158,10 @@ def check_platform(platform: dict) -> dict:
     try:
         text = load_page_text(platform["url"], scroll=platform.get("scroll", False))
         price, count = extractor(text)
+        if count == 0:
+            print(f"--- {name} DEBUG: body length = {len(text)} chars, "
+                  f"empty = {not text.strip()}", file=sys.stderr)
+            print(f"--- {name} DEBUG: first 200 chars:\n{text[:200]}", file=sys.stderr)
         return {"name": name, "price": price, "count": count, "error": None, "url": platform["url"]}
     except Exception as exc:  # noqa: BLE001
         return {"name": name, "price": None, "count": 0, "error": str(exc), "url": platform["url"]}
