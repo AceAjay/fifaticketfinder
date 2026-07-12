@@ -1,5 +1,5 @@
 """
-World Cup Ticket Watcher — Vivid Seats + Gametime + SeatPick
+World Cup Ticket Watcher — Vivid Seats + Gametime
 ----------------------------------------------------------------
 For each event, checks three marketplaces for the cheapest listing
 with 2 seats together. Sends one combined Telegram message per run
@@ -50,11 +50,6 @@ EVENTS = [
                 "url": "https://gametime.co/fifa/fifa-world-cup-nor-eng-vs-arg-sui-match-102-semi-final-tickets/7-15-2026-atlanta-ga-mercedes-benz-stadium/events/66a7e8a5218fbd1123388be7",
                 "scroll": False,
             },
-            {
-                "name": "SeatPick",
-                "url": "https://seatpick.com/tbd-vs-tbd-football-world-cup-semi-finals-tickets/event/321774?quantity=2",
-                "scroll": False,
-            },
         ],
     },
 ]
@@ -74,7 +69,6 @@ VIVIDSEATS_RE = re.compile(
     re.S,
 )
 GAMETIME_RE = re.compile(r"Includes Fees\n\$([\d,]+)/ea")
-SEATPICK_RE = re.compile(r"\$([\d,]+)\s*\nwith fees")
 
 
 def extract_vividseats(text: str) -> tuple[int | None, int]:
@@ -92,16 +86,9 @@ def extract_gametime(text: str) -> tuple[int | None, int]:
     return (min(prices) if prices else None), len(prices)
 
 
-def extract_seatpick(text: str) -> tuple[int | None, int]:
-    # SeatPick's URL already filters to quantity=2 and "Seated Together"
-    prices = [int(p.replace(",", "")) for p in SEATPICK_RE.findall(text)]
-    return (min(prices) if prices else None), len(prices)
-
-
 EXTRACTORS = {
     "Vivid Seats": extract_vividseats,
     "Gametime": extract_gametime,
-    "SeatPick": extract_seatpick,
 }
 
 
